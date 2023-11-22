@@ -290,31 +290,132 @@ class SignalDiffTool(object):
         return out
 
 
-def excel2csv(path):
-    '''
-    エクセルの1枚目のシートをcsv形式に変換
+class Attribute(object):
 
-    Args: path
-    - path (str): エクセルのパス
+    attribute_group = [
+        {'min', '最小値'}
+    ]
 
-    Returns:
-    - str: エクセルに入力されている値。csv形式。
-    '''
+    def __init__(self, name, value=''):
+        self.name = name
+        self.value = value
 
-    try:
-        wb = px.load_workbook(path)
-    except PermissionError:
-        print(f' please  close the {path}') 
-        return
-    ws = wb.worksheets[0]
+    def set(self, value):
+        return Attribute(self.name, value)
 
-    csv = []
-    for r in ws.iter_rows(min_row=ws.min_row, min_col=ws.min_column, values_only=True):
-        csv.append(list(map(lambda x: str(x).strip() if not x is None else '', r)))
 
-    no_empty_value_csv = [r for r in csv if any(r)]
+    def __repr__(self):
+        return f'Attribute(\'{self.name}\', \'{self.value}\')'
 
-    return '\n'.join(', '.join(row) for row in no_empty_value_csv)
+    def __eq__(self, other):
+        if self.value != other.value:
+            return False
+
+        if self.name.lower() == other.name.lower():
+            return True
+
+        for group in self.attribute_group:
+            if not self.name in group:
+                continue
+
+            if other.name in group:
+                return True
+
+        return False
+
+class UndifinedAttribute(Attribute):
+
+    def __init__(self, name):
+        super().__init__('Undifined')
+
+    def __bool__(self):
+        return False
+
+    def set(self, value):
+        return Attribute(self.name, '-')
+
+
+class Recode(object):
+
+    def __init__(self, key, key_value, attributes):
+        self.key = key
+        self.key_value = key_value
+        self.attributes = attributes
+
+    def __repr__(self):
+        return f'Recode(\'{self.key}\'=\'{self.key_value}\')'
+
+
+
+class Table(object):
+
+    def __init__(self, name, datas, key=0):
+        self.name = name
+        self.recode_name_list = []
+
+        if isinstance(key, int):
+            self.key_idx = key
+            self.key = datas[0][key]
+        elif isinstance(key, str):
+            self.key_idx = datas[0].index(key)
+            self.key = key
+
+        key_attr = [Attribute(self.key)]
+        other_attr = [Attribute(attr_name) for attr_name in datas[0][:self.key_idx] + datas[0][self.key_idx+1:]]
+        self.attributes = key_attr + other_attr
+
+        self.recodes = []
+        for idx, rec_data in enumerate(datas[1:]):
+            if len(rec_data) != len(self.attributes):
+                raise ValueError(f' not match the length of {idx=} recode and attributes ({len(self.attributes)}) ')
+
+            recode_name = rec_data[self.key_idx]
+            if not recode_name:
+                raise ValueError(f'\n\n\t the key of line {idx} recode is None. \n')
+            if recode_name in self.recode_name_list:
+                raise SignalExistError(f'{recode_name} Recode already exists.')
+            self.recode_name_list.append(recode_name)
+            self.recodes.append(Recode(self.key, recode_name,
+                                       [attr.set(data) for attr, data in zip(self.attributes, rec_data)]))
+
+    def __repr__(self):
+        return f'Table(\'{self.name}\')'
+
+    def get_attr(self, attr):
+        if not attr in self.attributes:
+            return UndifinedAttribute('Undifined')
+
+        return self.attributes[self.attributes.index(attr)]
+
+
+
+class ExcelTool(object):
+
+    def __init__(self, path, sheet_name=None):
+        self.path = path
+        self.name = sheet_name
+
+        try:
+            wb = px.load_workbook(path)
+        except PermissionError:
+            raise PermissionError(f'\n\n\t please  close the {path}. \n') 
+        if sheet_name is None:
+            self.ws = wb.worksheets[0]
+        else:
+            self.ws = wb[sheet_name]
+
+    def to_list(self, min_row=None, max_row=None, min_col=None, max_col=None):
+        """セルの値をリストにして出力。値の先頭末尾の空白は削除。空白の場合は空文字。"""
+        min_row = self.ws.min_row if min_row is None else min_row
+        min_col = self.ws.min_column if min_col is None else min_col
+        max_row = self.ws.max_row if max_row is None else max_row
+        max_col = self.ws.max_column if max_col is None else max_col
+
+        out_list = []
+        for r in self.ws.iter_rows(min_row=min_row, min_col=min_col, max_row=max_row, max_col=max_col, values_only=True):
+            out_list.append(list(map(lambda x: str(x).strip() if not x is None else '', r)))
+
+        return out_list
 
 
 class ExcelWriter(object):
@@ -325,20 +426,6 @@ class ExcelWriter(object):
     def write(self, txt):
         print(txt)
 
-
-def main(*name_data_keys):
-
-
-    tm = SignalDiffTool()
-
-    for n, d, k in name_data_keys:
-        tm.add_comparison(n, excel2csv(d), key=k)
-
-
-    tm.compare()
-
-    writer = ExcelWriter('diff.excl')
-    writer.write(tm.export_csv())
 
 
 
@@ -357,8 +444,30 @@ if __name__ == "__main__":
     data_path1 = 'diff-tools/sample/Signals_ver1.xlsx'
     data_path2 = 'diff-tools/sample/Signals_ver2.xlsx'
 
+    datas1 = ExcelTool(data_path1).to_list()
+    datas2 = ExcelTool(data_path2).to_list(max_row=13)
+    t1 = Table(1, datas1)
+    t2 = Table(2, datas2)
 
-    main((1, data_path1, 'id'), (2, data_path2, 'id'))
+    all_tables = [t1, t2]
+    all_attributes = all_tables[0].attributes.copy()
+    for t in all_tables[1:]:
+        for attr in t.attributes:
+            if not attr in all_attributes:
+                all_attributes.append(attr)
 
+    all_recodes = all_tables[0].recode_name_list.copy()
+    for t in all_tables[1:]:
+        for recode_name in t.recode_name_list:
+            if not recode_name in all_recodes:
+                all_recodes.append(recode_name)
+
+    comparison_each_attr = [(t, t.get_attr(attr)) for attr in all_attributes[1:] for t in all_tables]
+    comparison_attrs_names = [f'{table.name}: {attr.name}' for table, attr in comparison_each_attr]
+    print(comparison_each_attr)
+    print(comparison_attrs_names)
+
+
+ 
 
 
