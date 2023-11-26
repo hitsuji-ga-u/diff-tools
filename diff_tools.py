@@ -157,12 +157,7 @@ class ExcelTool(object):
 
         if not self.path.exists():
             wb = px.Workbook()
-            font = px.styles.Font(name='Meiryo UI')
-            for row in wb.worksheets[0].iter_rows():
-                for cell in row:
-                    cell.fornt = font
             wb.save(path)
-
 
         try:
             wb = px.load_workbook(path)
@@ -248,6 +243,13 @@ class ExcelTool(object):
             self.save()
             return
 
+    def font(self, font):
+        f = px.styles.Font(name=font)
+        for row in range(1, self.ws.max_row+1):
+            for col in range(1, self.ws.max_column+1):
+                self.ws.cell(row=row, column=col).font = f
+        self.save()
+
     def line(self, cols=None, rows=None, type='thin'):
         if not rows is None:
             for row_idx in rows:
@@ -291,14 +293,16 @@ class ExcelTool(object):
     def save(self):
         self.wb.save(str(self.path))
 
+
+
 if __name__ == "__main__":
 
     data_path1 = 'diff-tools/sample/Signals_ver1.xlsx'
     data_path2 = 'diff-tools/sample/Signals_ver2.xlsx'
     diff_path = 'diff-tools/sample/Signals_diff.xlsx'
 
-    datas1 = ExcelTool(data_path1).to_list()
-    datas2 = ExcelTool(data_path2).to_list(max_row=13)
+    datas1 = ExcelTool(data_path1).to_list(min_col=2, min_row=2, max_row=12, max_col=8)
+    datas2 = ExcelTool(data_path2).to_list(min_col=2, min_row=2, max_row=13, max_col=7)
     t1 = Table(1, datas1)
     t2 = Table(2, datas2)
 
@@ -360,7 +364,7 @@ if __name__ == "__main__":
     all_attributes.extend([f'{t.name}: {t.get_attr(attr).name}' for attr in comparison_attributes for t in all_tables])
     all_datas.append(all_attributes)
 
-
+    # 出力用に全て文字列に
     for key in all_keys:
         data = [key.value]
         for comp_attr in comparison_attributes:
@@ -375,7 +379,7 @@ if __name__ == "__main__":
                 data.append(t.get_field(key, comp_attr).value)
         all_datas.append(data)
 
-
+    # 出力を整頓
     out = ExcelTool(diff_path)
     out.write(all_datas)
 
@@ -403,3 +407,4 @@ if __name__ == "__main__":
     out.line(rows=dot_line_row, type='dotted')
 
     out.clear_more_than(len(all_attributes), len(all_keys) + 1)
+    out.font('Meiryo UI')
