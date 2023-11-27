@@ -1,10 +1,7 @@
-import abc
 from enum import Enum
-import csv
-from typing import Any
 import openpyxl as px
-from pprint  import pprint
 from pathlib import Path
+
 
 class SignalExistError(Exception):
     def __init__(self, message='     Sinals already exists.   '):
@@ -20,14 +17,17 @@ class Judgement(Enum):
     CHANGE = 4
 
 
- 
-
-
 
 class Attribute(object):
 
     attribute_group = [
-        {'min', '最小値'}
+        {'min', '最小値'},
+        {'Name', 'Signal Name'},
+        {'ID', 'CAN ID'},
+        {'Cycle Time [ms]', 'Cycl time[ms]'},
+        {'Signal Description', 'Value table'},
+        {'Size', 'Size[Bit]'},
+        {'TX', 'Transmitter'}
     ]
 
     def __init__(self, name, value=''):
@@ -125,11 +125,6 @@ class Table(object):
 
         return self.attributes[self.attributes.index(attr)]
 
-    def get_recode(self, recode_name):
-        if not self.has_recode(recode_name):
-            return None
-        return self.recodes[self.recode_name_list.index(recode_name)]
-
     def get_field(self, key, attr):
         attr_idx = self.attributes.index(attr)
         recode = self.recodes[self.keys_list.index(key)]
@@ -187,7 +182,6 @@ class ExcelTool(object):
             for col_idx in range(col + 1, self.ws.max_column+1):
                 for row_idx in range(1, self.ws.max_row+1):
                     cell = self.ws.cell(row=row_idx, column=col_idx)
-                    print(f'del border {cell.coordinate}')
                     cell.border = no_borders
                     cell.fill = px.styles.PatternFill(fill_type=None)
 
@@ -225,7 +219,7 @@ class ExcelTool(object):
         min_col = self.anchor[0] if min_col is None else min_col
         max_row = self.ws.max_row if max_row is None else max_row
         max_col = self.ws.max_column if max_col is None else max_col
-
+        print(f'{min_row=}, {max_row=}, {min_col=}, {max_col=}')
         if not value is None:
             for row in self.ws.iter_rows(min_row=min_row, max_row=max_row):
                 for cell in row:
@@ -238,6 +232,7 @@ class ExcelTool(object):
             for row_idx in [row + self.anchor[1] for row in row]:
                 for col_idx in range(min_col, max_col+1):
                     cell = self.ws.cell(row=row_idx, column=col_idx)
+                    print(cell)
                     cell.fill = fill
 
             self.save()
@@ -294,94 +289,130 @@ class ExcelTool(object):
         self.wb.save(str(self.path))
 
 
+class DiffTool(object):
+    def __init__(self):
+        self.tables = []
+        self.all_keys = []
+        self.key = None
+        self.comparison_attributes = []
+
+    def add_table(self, name, data_list, key=0):
+        t = Table(name, data_list, key)
+        self.tables.append(t)
+        self.key = t.key
+        for attr in t.attributes:
+            if attr == self.key:
+                continue
+            if not attr in self.comparison_attributes:
+                self.comparison_attributes.append(attr)
+
+        for key in t.keys_list:
+            if not key in self.all_keys:
+                self.all_keys.append(key)
+
+    def comapre(self):
+        # Tableクラスに入れたいので、リストを作成する
+        diff_datas = [[attr.name for attr in [self.key] + self.comparison_attributes]]
+        for key in self.all_keys:
+            diff_data = [key.value]
+            for attr in self.comparison_attributes:
+                result = Judgement.NOJUDGEMENT
+                for i in range(len(self.tables) - 1):
+                    t1 = self.tables[i]
+                    t2 = self.tables[i+1]
+                    # いずれかのテーブルで、判定したい属性が未定義ならその属性の判定は判定無しとする。
+                    if not t1.has_attr(attr) or not t2.has_attr(attr):
+                        result = Judgement.NOJUDGEMENT
+                        continue
+
+                    # まだ判定がされていない場合
+                    if result == Judgement.NOJUDGEMENT:
+                        if t1.has_recode(key) and not t2.has_recode(key):
+                            result = Judgement.DEL
+                        elif not t1.has_recode(key) and t2.has_recode(key):
+                            result = Judgement.ADD
+                        elif t1.get_field(key, attr) == t2.get_field(key, attr):
+                            result = Judgement.SAME
+                        else:
+                            result = Judgement.CHANGE
+                    # すでに判定されている（テーブルが3以上ある）場合
+                    else:
+                        if result == Judgement.SAME and t1.get_field(key, attr) == t2.get_field(key, attr):
+                            result = Judgement.SAME
+                        else:
+                            result = Judgement.CHANGE
+                diff_data.append(result.name)
+            diff_datas.append(diff_data)
+
+        self.tables.append(Table('diff', diff_datas))
+
+    def out(self):
+        all_datas = []
+        all_attributes = [self.key.name]
+        all_attributes.extend([f'{t.name}:\n{t.get_attr(attr).name}' for attr in self.comparison_attributes for t in self.tables])
+        all_datas.append(all_attributes)
+
+        # 出力用に全て文字列に
+        for key in self.all_keys:
+            data = [key.value]
+            for comp_attr in self.comparison_attributes:
+                for t in self.tables:
+                    if not t.has_attr(comp_attr):
+                        data.append('')
+                        continue
+                    if not t.has_recode(key):
+                        data.append('-')
+                        continue
+
+                    data.append(t.get_field(key, comp_attr).value)
+            all_datas.append(data)
+        return all_datas
+
+    def get_border_diff(self):
+        # thin_line_col = [0]
+        # thin_line_col.extend([c for c in range(1, len(all_tables)*(len(comparison_attributes)+1), len(all_tables))])
+        return [0] + [c for c in range(1, len(self.tables)*(len(self.comparison_attributes)+1), len(self.tables))]
+
+    def get_border_attr(self):
+        attr_border = []
+        for c in range(len(self.comparison_attributes)):
+            for j in range(len(self.tables) - 1):
+                attr_border.append(2 + c*len(self.tables) + j)
+        return attr_border
+
+    def get_border_keys(self):
+        return [r for r in range(2, len(self.all_keys)+1)]
+
+    def get_border_attr_and_keys(self):
+        return  [0, 1, len(self.all_keys)+1]
+
+    def get_attr_num(self):
+        return len(self.comparison_attributes) * len(self.tables) + 1
+
+    def get_keys_num(self):
+        return len(self.all_keys)
+
 
 if __name__ == "__main__":
 
-    data_path1 = 'diff-tools/sample/Signals_ver1.xlsx'
-    data_path2 = 'diff-tools/sample/Signals_ver2.xlsx'
-    diff_path = 'diff-tools/sample/Signals_diff.xlsx'
+    data_path1 = 'sample/Signals_ver1.xlsx'
+    data_path2 = 'sample/Signals_ver2.xlsx'
+    out_path = 'sample/Signals_diff.xlsx'
 
     datas1 = ExcelTool(data_path1).to_list(min_col=2, min_row=2, max_row=12, max_col=8)
     datas2 = ExcelTool(data_path2).to_list(min_col=2, min_row=2, max_row=13, max_col=7)
-    t1 = Table(1, datas1)
-    t2 = Table(2, datas2)
 
-    all_tables = [t1, t2]
+    diff_tool = DiffTool()
+    diff_tool.add_table(1, datas1)
+    diff_tool.add_table(2, datas2)
 
-    # get all attributes
-    comparison_attributes = []
-    for t in all_tables:
-        for attr in t.attributes:
-            if attr == t.key:
-                continue
-            if not attr in comparison_attributes:
-                comparison_attributes.append(attr)
+    diff_tool.comapre()
 
-    # get all recodes name
-    all_keys = []
-    for t in all_tables:
-        for key in t.keys_list:
-            if not key in all_keys:
-                all_keys.append(key)
+    diff_data = diff_tool.out()
 
-    diff_datas = [[attr.name for attr in [all_tables[0].key] + comparison_attributes]]
-    for key in all_keys:
-        diff_data = [key.value]
-        for attr in comparison_attributes:
-            result = Judgement.NOJUDGEMENT
-            for i in range(len(all_tables) - 1):
-                t1 = all_tables[i]
-                t2 = all_tables[i+1]
-                # いずれかのテーブルで、判定したい属性が未定義ならその属性の判定は判定無しとする。
-                if not t1.has_attr(attr) or not t2.has_attr(attr):
-                    result = Judgement.NOJUDGEMENT
-                    continue
+    out = ExcelTool(out_path)
 
-                # まだ判定がされていない場合
-                if result == Judgement.NOJUDGEMENT:
-                    if t1.has_recode(key) and not t2.has_recode(key):
-                        result = Judgement.DEL
-                    elif not t1.has_recode(key) and t2.has_recode(key):
-                        result = Judgement.ADD
-                    elif t1.get_field(key, attr) == t2.get_field(key, attr):
-                        result = Judgement.SAME
-                    else:
-                        result = Judgement.CHANGE
-                # すでに判定されている（テーブルが3以上ある）場合
-                else:
-                    if result == Judgement.SAME and t1.get_field(key, attr) == t2.get_field(key, attr):
-                        result = Judgement.SAME
-                    else:
-                        result = Judgement.CHANGE
-            diff_data.append(result.name)
-        diff_datas.append(diff_data)
-
-    all_tables.append(Table('judgement', diff_datas))
-
-
-    all_datas = []
-    all_attributes = [all_tables[0].key.name]
-    all_attributes.extend([f'{t.name}: {t.get_attr(attr).name}' for attr in comparison_attributes for t in all_tables])
-    all_datas.append(all_attributes)
-
-    # 出力用に全て文字列に
-    for key in all_keys:
-        data = [key.value]
-        for comp_attr in comparison_attributes:
-            for t in all_tables:
-                if not t.has_attr(comp_attr):
-                    data.append('')
-                    continue
-                if not t.has_recode(key):
-                    data.append('-')
-                    continue
-
-                data.append(t.get_field(key, comp_attr).value)
-        all_datas.append(data)
-
-    # 出力を整頓
-    out = ExcelTool(diff_path)
-    out.write(all_datas)
+    out.write(diff_data)
 
     out.fill(value=Judgement.SAME.name, color='BDD7EE')
     out.fill(value=Judgement.ADD.name, color='C6E0B4')
@@ -390,21 +421,122 @@ if __name__ == "__main__":
     out.fill(value=Judgement.NOJUDGEMENT.name, color='C6ACD9')
     out.fill(row=[0], color='F8CBAD')
 
-    thin_line_col = [0]
-    thin_line_col.extend([c for c in range(1, len(all_tables)*(len(comparison_attributes)+1), len(all_tables))])
-
-    dot_line_col = []
-    for c in range(len(comparison_attributes)):
-        for j in range(len(all_tables) - 1):
-            dot_line_col.append(2 + c*len(all_tables) + j)
-
-    thin_line_row = [0, 1, len(all_keys)+1]
-    dot_line_row = [r for r in range(2, len(all_keys)+1)]
+    thin_line_col = diff_tool.get_border_diff()
+    dot_line_col = diff_tool.get_border_attr()
+    thin_line_row = diff_tool.get_border_attr_and_keys()
+    dot_line_row = diff_tool.get_border_keys()
 
     out.line(cols=thin_line_col, type='thin')
     out.line(cols=dot_line_col, type='dotted')
     out.line(rows=thin_line_row, type='thin')
     out.line(rows=dot_line_row, type='dotted')
 
-    out.clear_more_than(len(all_attributes), len(all_keys) + 1)
+    out.clear_more_than(diff_tool.get_attr_num(), diff_tool.get_keys_num() + 1)
     out.font('Meiryo UI')
+
+
+    # t1 = Table(1, datas1)
+    # t2 = Table(2, datas2)
+
+    # all_tables = [t1, t2]
+
+    # # get all attributes
+    # comparison_attributes = []
+    # for t in all_tables:
+    #     for attr in t.attributes.copy():
+    #         if attr == t.key:
+    #             continue
+    #         if not attr in comparison_attributes:
+    #             comparison_attributes.append(attr)
+
+    # # get all recodes name
+    # all_keys = []
+    # for t in all_tables:
+    #     for key in t.keys_list:
+    #         if not key in all_keys:
+    #             all_keys.append(key)
+
+    # diff_datas = [[attr.name for attr in [all_tables[0].key] + comparison_attributes]]
+    # for key in all_keys:
+    #     diff_data = [key.value]
+    #     for attr in comparison_attributes:
+    #         result = Judgement.NOJUDGEMENT
+    #         for i in range(len(all_tables) - 1):
+    #             t1 = all_tables[i]
+    #             t2 = all_tables[i+1]
+    #             # いずれかのテーブルで、判定したい属性が未定義ならその属性の判定は判定無しとする。
+    #             if not t1.has_attr(attr) or not t2.has_attr(attr):
+    #                 result = Judgement.NOJUDGEMENT
+    #                 continue
+
+    #             # まだ判定がされていない場合
+    #             if result == Judgement.NOJUDGEMENT:
+    #                 if t1.has_recode(key) and not t2.has_recode(key):
+    #                     result = Judgement.DEL
+    #                 elif not t1.has_recode(key) and t2.has_recode(key):
+    #                     result = Judgement.ADD
+    #                 elif t1.get_field(key, attr) == t2.get_field(key, attr):
+    #                     result = Judgement.SAME
+    #                 else:
+    #                     result = Judgement.CHANGE
+    #             # すでに判定されている（テーブルが3以上ある）場合
+    #             else:
+    #                 if result == Judgement.SAME and t1.get_field(key, attr) == t2.get_field(key, attr):
+    #                     result = Judgement.SAME
+    #                 else:
+    #                     result = Judgement.CHANGE
+    #         diff_data.append(result.name)
+    #     diff_datas.append(diff_data)
+
+    # all_tables.append(Table('judgement', diff_datas))
+
+
+    # all_datas = []
+    # all_attributes = [all_tables[0].key.name]
+    # all_attributes.extend([f'{t.name}:\n{t.get_attr(attr).name}' for attr in comparison_attributes for t in all_tables])
+    # all_datas.append(all_attributes)
+
+    # # 出力用に全て文字列に
+    # for key in all_keys:
+    #     data = [key.value]
+    #     for comp_attr in comparison_attributes:
+    #         for t in all_tables:
+    #             if not t.has_attr(comp_attr):
+    #                 data.append('')
+    #                 continue
+    #             if not t.has_recode(key):
+    #                 data.append('-')
+    #                 continue
+
+    #             data.append(t.get_field(key, comp_attr).value)
+    #     all_datas.append(data)
+
+    # # 出力を整頓
+    # out = ExcelTool(out_path)
+    # out.write(all_datas)
+
+    # out.fill(value=Judgement.SAME.name, color='BDD7EE')
+    # out.fill(value=Judgement.ADD.name, color='C6E0B4')
+    # out.fill(value=Judgement.DEL.name, color='DBDBDB')
+    # out.fill(value=Judgement.CHANGE.name, color='FFE699')
+    # out.fill(value=Judgement.NOJUDGEMENT.name, color='C6ACD9')
+    # out.fill(row=[0], color='F8CBAD')
+
+    # thin_line_col = [0]
+    # thin_line_col.extend([c for c in range(1, len(all_tables)*(len(comparison_attributes)+1), len(all_tables))])
+
+    # dot_line_col = []
+    # for c in range(len(comparison_attributes)):
+    #     for j in range(len(all_tables) - 1):
+    #         dot_line_col.append(2 + c*len(all_tables) + j)
+
+    # thin_line_row = [0, 1, len(all_keys)+1]
+    # dot_line_row = [r for r in range(2, len(all_keys)+1)]
+
+    # out.line(cols=thin_line_col, type='thin')
+    # out.line(cols=dot_line_col, type='dotted')
+    # out.line(rows=thin_line_row, type='thin')
+    # out.line(rows=dot_line_row, type='dotted')
+
+    # out.clear_more_than(len(all_attributes), len(all_keys) + 1)
+    # out.font('Meiryo UI')
